@@ -1,0 +1,8 @@
+# Files #
+.env
+.vscode
+
+# Folders #
+venv/
+docs/
+tests/
