@@ -5,6 +5,7 @@ import pandas as pd
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 from datetime import datetime
 import time
 import requests
@@ -12,15 +13,23 @@ from bs4 import BeautifulSoup
 import re
 # from googlesearch import search # Deprecated/Broken
 from ddgs import DDGS
+from urllib.parse import urlparse
 
 # --- CONFIGURATION ---
+load_dotenv()
 MY_EMAIL = os.getenv("MY_EMAIL")
 MY_APP_PASSWORD = os.getenv("MY_APP_PASSWORD")
+CSV_FILE = "leads.csv"
 
 # --- DATA LOADING ---
 if 'leads' not in st.session_state:
-    # Initialize empty DataFrame
-    st.session_state.leads = pd.DataFrame(columns=["Company", "Email", "Country", "Status"])
+    if os.path.exists(CSV_FILE):
+        st.session_state.leads = pd.read_csv(CSV_FILE)
+    else:
+        st.session_state.leads = pd.DataFrame(columns=["Company", "Email", "Country", "Status"])
+
+def save_leads():
+    st.session_state.leads.to_csv(CSV_FILE, index=False)
 
 # --- SCRAPING FUNCTION ---
 def extract_emails_from_html(soup):
@@ -138,13 +147,13 @@ Actuellement étudiant en Double Master Data Science & FinTech (Université de R
 
 Votre expertise chez {company_name} m'intéresse particulièrement. De mon côté, j'ai acquis de solides bases techniques (Python, C, SQL) et développé plusieurs projets concrets :
 
-* **Redaking Project** : Développement d'un assistant LLM local (Python + APIs + Ollama) avec gestion de mémoire persistante.
-* **SynapsX** : Création d'un outil de recommandation d'investissement boursier basé sur des algorithmes de prédiction.
-* **Expérience Web** : J'ai également travaillé sur le développement Fullstack lors d'un précédent poste.
+- Redaking Project : Développement d'un assistant LLM local (Python + APIs + Ollama) avec gestion de mémoire persistante.
+- SynapsX : Création d'un outil de recommandation d'investissement boursier basé sur des algorithmes de prédiction.
+- Développement Web** : J'ai également travaillé sur le développement Fullstack lors d'un précédent poste.
 
-Je serais ravi de pouvoir échanger avec vous sur la manière dont je pourrais contribuer aux projets de {company_name}. Vous trouverez mon CV en pièce jointe (lien ci-dessous).
+Je serais ravi de pouvoir échanger avec vous sur la manière dont je pourrais contribuer aux projets de {company_name}. Vous trouverez mon CV en pièce jointe.
 
-Cordialement,
+Bien cordialement,
 
 Wail Ameur
 +33 6 95 02 72 99
@@ -159,11 +168,11 @@ I am currently a Double Master’s student in Data Science & FinTech (University
 
 I have built a strong technical foundation in Python, C, and SQL, applying these skills in complex projects:
 
-* **Redaking Project**: Developed a local LLM assistant (Python + APIs + Ollama) capable of file management and persistent memory.
-* **SynapsX**: Built software for stock market investment recommendations using prediction algorithms.
-* **Web Development**: Previous experience in Fullstack development (PHP/JS).
+- Redaking Project: Developed a local LLM assistant (Python + APIs + Ollama) capable of file management and persistent memory.
+- SynapsX: Built software for stock market investment recommendations using prediction algorithms.
+- Web Development: Previous experience in Fullstack development (PHP/JS).
 
-I am eager to bring my background in applied AI and financial analysis to the team at {company_name}. My resume is attached (or available at www.wailameur.com).
+I am eager to bring my background in applied AI and financial analysis to the team at {company_name}. My resume is attached.
 
 Best regards,
 
@@ -174,16 +183,23 @@ www.wailameur.com
     return subject, body
 
 # --- SENDING FUNCTION ---
-def send_email(to_email, subject, body):
+def send_email(to_email, subject, body, attachment_path=None):
     msg = MIMEMultipart()
     msg['From'] = MY_EMAIL
     msg['To'] = to_email
     msg['Subject'] = subject
     msg.attach(MIMEText(body, 'plain'))
     
-    # ATTACHMENT LOGIC WOULD GO HERE
-    # For now, we assume the link to the website/linkedin is in the body 
-    # to avoid spam filters blocking attachments from cold emails.
+    # Attachment Logic
+    if attachment_path and os.path.exists(attachment_path):
+        try:
+            with open(attachment_path, "rb") as f:
+                part = MIMEApplication(f.read(), Name=os.path.basename(attachment_path))
+            # After the file is closed
+            part['Content-Disposition'] = f'attachment; filename="{os.path.basename(attachment_path)}"'
+            msg.attach(part)
+        except Exception as e:
+            st.error(f"Failed to attach file: {e}")
 
     try:
         server = smtplib.SMTP('smtp.gmail.com', 587)
@@ -292,10 +308,21 @@ if start_scraping:
 
                     if valid_emails:
                         s.write(f"🎉 Found {len(valid_emails)} email(s) at {url}")
-                        # Guess company name from Title
+                        
+                        # Better Company Name Extraction
                         company_name = "Unknown"
-                        if soup.title:
-                            company_name = soup.title.string.strip()[:30]
+                        
+                        # 1. Try Open Graph Site Name
+                        og_site_name = soup.find("meta", property="og:site_name")
+                        if og_site_name and og_site_name.get("content"):
+                            company_name = og_site_name["content"].strip()
+                        else:
+                            # 2. Try Domain Name (cleaner than Title)
+                            domain = urlparse(url).netloc
+                            # Remove www. and .com/.fr etc
+                            if domain.startswith("www."):
+                                domain = domain[4:]
+                            company_name = domain.split('.')[0].capitalize()
                         
                         # Try to infer country from TLD
                         country = "International"
@@ -325,6 +352,7 @@ if start_scraping:
             # Remove duplicates
             new_df = new_df.drop_duplicates(subset=['Email'])
             st.session_state.leads = pd.concat([st.session_state.leads, new_df], ignore_index=True).drop_duplicates(subset=['Email'])
+            save_leads() # Save to CSV
             st.success(f"Found {len(found_leads)} new leads!")
         else:
             st.warning("No emails found. Try a different query or increase 'Max Results'.")
@@ -338,6 +366,7 @@ with st.expander("Add New Lead Manually"):
     if st.button("Add Lead"):
         new_row = {"Company": new_company, "Email": new_email, "Country": new_country, "Status": "Pending"}
         st.session_state.leads = pd.concat([st.session_state.leads, pd.DataFrame([new_row])], ignore_index=True)
+        save_leads()
         st.success("Lead added!")
 
 # 2. View Data
@@ -359,19 +388,25 @@ if st.button(f"Send Batch ({daily_limit} emails)"):
         for index, row in pending_leads.iterrows():
             subj, body = get_email_content(row['Company'], row['Country'])
             
-            # Simulate sending (Uncomment the real send function when ready)
-            # success = send_email(row['Email'], subj, body) 
+            # Determine Attachment
+            if row['Country'] == "France":
+                attachment = "docs/Wail_Ameur_CV.pdf"
+            else:
+                attachment = "docs/Wail_Ameur_Resume.pdf"
             
-            # FOR DEMO ONLY:
-            time.sleep(1) # Simulate network delay
-            success = True 
+            # Send Email
+            success = send_email(row['Email'], subj, body, attachment_path=attachment) 
             
             if success:
                 st.session_state.leads.at[index, 'Status'] = f"Sent {datetime.now().strftime('%Y-%m-%d')}"
                 st.toast(f"Sent to {row['Company']}")
+            else:
+                st.toast(f"Failed to send to {row['Company']}")
             
             progress_bar.progress((index + 1) / len(pending_leads))
+            time.sleep(1) # Small delay to be nice to Gmail server
             
+        save_leads() # Save status updates
         st.success("Batch completed!")
         st.rerun()
 
