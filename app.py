@@ -287,64 +287,104 @@ if start_scraping:
                         continue
                         
                     soup = BeautifulSoup(response.text, 'html.parser')
-                    valid_emails = extract_emails_from_html(soup)
                     
-                    # 2. If no emails, try to find "Contact" or "About" page
-                    if not valid_emails:
-                        # ... (existing contact page logic) ...
-                        from urllib.parse import urljoin
-                        contact_links = soup.find_all('a', href=True)
-                        for link in contact_links:
-                            href = link['href'].lower()
-                            text = link.get_text().lower()
-                            
-                            if any(x in href or x in text for x in ['contact', 'about', 'team', 'nous-contacter', 'a-propos']):
-                                contact_url = urljoin(url, link['href'])
-                                if debug_mode: log_container.text(f"  ↳ Checking sub-page: {contact_url}")
+                    # --- SMART CRAWLING FOR LISTICLES ---
+                    # Check if this is a "Top 10" style article
+                    page_title = soup.title.string.lower() if soup.title else ""
+                    is_listicle = any(x in page_title for x in ['top ', 'best ', 'list ', 'startups in', 'companies in'])
+                    
+                    target_urls = [url] # Default: just scrape this page
+                    
+                    if is_listicle:
+                        if debug_mode: log_container.text(f"  📄 Detected listicle/aggregator. Looking for external links...")
+                        external_links = set()
+                        for a in soup.find_all('a', href=True):
+                            href = a['href']
+                            # Basic filter for external links
+                            if href.startswith('http') and urlparse(href).netloc != urlparse(url).netloc:
+                                # Filter out social media and common tech giants
+                                if not any(x in href for x in ['linkedin', 'twitter', 'facebook', 'instagram', 'youtube', 'google', 'apple', 'microsoft', 'medium', 'wikipedia']):
+                                    external_links.add(href)
+                        
+                        # Take top 5 external links to visit
+                        if external_links:
+                            target_urls = list(external_links)[:5]
+                            if debug_mode: log_container.text(f"  ➡️ Found {len(external_links)} external links. Visiting top {len(target_urls)}...")
+                    
+                    # --- PROCESS URLS (Either the main one or the extracted ones) ---
+                    for target_url in target_urls:
+                        try:
+                            if target_url != url:
+                                if debug_mode: log_container.text(f"    🌐 Visiting external: {target_url}")
                                 try:
-                                    resp_contact = requests.get(contact_url, headers=headers, timeout=10)
-                                    if resp_contact.status_code == 200:
-                                        soup_contact = BeautifulSoup(resp_contact.text, 'html.parser')
-                                        new_emails = extract_emails_from_html(soup_contact)
-                                        valid_emails.extend(new_emails)
-                                        if new_emails:
-                                            break 
+                                    resp_target = requests.get(target_url, headers=headers, timeout=10)
+                                    if resp_target.status_code != 200: continue
+                                    soup_target = BeautifulSoup(resp_target.text, 'html.parser')
                                 except:
                                     continue
+                            else:
+                                soup_target = soup
 
-                    if valid_emails:
-                        s.write(f"🎉 Found {len(valid_emails)} email(s) at {url}")
-                        
-                        # Better Company Name Extraction
-                        company_name = "Unknown"
-                        
-                        # 1. Try Open Graph Site Name
-                        og_site_name = soup.find("meta", property="og:site_name")
-                        if og_site_name and og_site_name.get("content"):
-                            company_name = og_site_name["content"].strip()
-                        else:
-                            # 2. Try Domain Name (cleaner than Title)
-                            domain = urlparse(url).netloc
-                            # Remove www. and .com/.fr etc
-                            if domain.startswith("www."):
-                                domain = domain[4:]
-                            company_name = domain.split('.')[0].capitalize()
-                        
-                        # Try to infer country from TLD
-                        country = "International"
-                        if ".fr" in url:
-                            country = "France"
-                        elif ".de" in url:
-                            country = "Germany"
+                            valid_emails = extract_emails_from_html(soup_target)
                             
-                        for email in valid_emails:
-                            found_leads.append({
-                                "Select": False,
-                                "Company": company_name,
-                                "Email": email,
-                                "Country": country,
-                                "Status": "Pending"
-                            })
+                            # 2. If no emails, try to find "Contact" or "About" page
+                            if not valid_emails:
+                                from urllib.parse import urljoin
+                                contact_links = soup_target.find_all('a', href=True)
+                                for link in contact_links:
+                                    href = link['href'].lower()
+                                    text = link.get_text().lower()
+                                    
+                                    if any(x in href or x in text for x in ['contact', 'about', 'team', 'nous-contacter', 'a-propos']):
+                                        contact_url = urljoin(target_url, link['href'])
+                                        # if debug_mode: log_container.text(f"      ↳ Checking sub-page: {contact_url}")
+                                        try:
+                                            resp_contact = requests.get(contact_url, headers=headers, timeout=10)
+                                            if resp_contact.status_code == 200:
+                                                soup_contact = BeautifulSoup(resp_contact.text, 'html.parser')
+                                                new_emails = extract_emails_from_html(soup_contact)
+                                                valid_emails.extend(new_emails)
+                                                if new_emails:
+                                                    break 
+                                        except:
+                                            continue
+
+                            if valid_emails:
+                                s.write(f"🎉 Found {len(valid_emails)} email(s) at {target_url}")
+                                
+                                # Better Company Name Extraction
+                                company_name = "Unknown"
+                                
+                                # 1. Try Open Graph Site Name
+                                og_site_name = soup_target.find("meta", property="og:site_name")
+                                if og_site_name and og_site_name.get("content"):
+                                    company_name = og_site_name["content"].strip()
+                                else:
+                                    # 2. Try Domain Name (cleaner than Title)
+                                    domain = urlparse(target_url).netloc
+                                    # Remove www. and .com/.fr etc
+                                    if domain.startswith("www."):
+                                        domain = domain[4:]
+                                    company_name = domain.split('.')[0].capitalize()
+                                
+                                # Try to infer country from TLD
+                                country = "International"
+                                if ".fr" in target_url:
+                                    country = "France"
+                                elif ".de" in target_url:
+                                    country = "Germany"
+                                    
+                                for email in valid_emails:
+                                    found_leads.append({
+                                        "Select": False,
+                                        "Company": company_name,
+                                        "Email": email,
+                                        "Country": country,
+                                        "Status": "Pending"
+                                    })
+                        except Exception as e:
+                            continue
+
                 except Exception as e:
                     if debug_mode: log_container.text(f"⚠️ Error processing {url}: {e}")
                     continue
