@@ -1,4 +1,8 @@
-Company,Email,Country,Status
-F6s,support@f6s.com,International,Sent 2025-12-15
-LEBIGDATA.FR,devis@publithings.com,France,Pending
-Paris Startups List,ludovic.bordes@arenametrix.com,International,Pending
+Select,Company,Email,Country,Status
+False,F6s,support@f6s.com,International,Sent 2025-12-15
+False,Publithings,devis@publithings.com,France,Sent 2025-12-15
+False,Arenametrix,ludovic.bordes@arenametrix.com,France,Sent 2025-12-15
+False,Crowdfund Insider,support@crowdfundinsider.com,International,Pending
+False,Crowdfund Insider,info@crowdfundinsider.com,International,Pending
+False,Crowdfund Insider,advertising@crowdfundinsider.com,International,Pending
+False,Choose Paris Region,laurence.curti@chooseparisregion.org,International,Pending

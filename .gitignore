@@ -1,6 +1,7 @@
 # Files #
 .env
 .vscode
+leads.csv
 
 # Folders #
 venv/

@@ -26,7 +26,13 @@ if 'leads' not in st.session_state:
     if os.path.exists(CSV_FILE):
         st.session_state.leads = pd.read_csv(CSV_FILE)
     else:
-        st.session_state.leads = pd.DataFrame(columns=["Company", "Email", "Country", "Status"])
+        st.session_state.leads = pd.DataFrame(columns=["Select", "Company", "Email", "Country", "Status"])
+
+# Ensure Select column exists and is boolean
+if "Select" not in st.session_state.leads.columns:
+    st.session_state.leads.insert(0, "Select", False)
+else:
+    st.session_state.leads["Select"] = st.session_state.leads["Select"].fillna(False).astype(bool)
 
 def save_leads():
     st.session_state.leads.to_csv(CSV_FILE, index=False)
@@ -333,6 +339,7 @@ if start_scraping:
                             
                         for email in valid_emails:
                             found_leads.append({
+                                "Select": False,
                                 "Company": company_name,
                                 "Email": email,
                                 "Country": country,
@@ -364,28 +371,54 @@ with st.expander("Add New Lead Manually"):
     new_email = c2.text_input("Email Address")
     new_country = c3.selectbox("Country", ["France", "International"])
     if st.button("Add Lead"):
-        new_row = {"Company": new_company, "Email": new_email, "Country": new_country, "Status": "Pending"}
+        new_row = {"Select": False, "Company": new_company, "Email": new_email, "Country": new_country, "Status": "Pending"}
         st.session_state.leads = pd.concat([st.session_state.leads, pd.DataFrame([new_row])], ignore_index=True)
         save_leads()
         st.success("Lead added!")
 
-# 2. View Data
-st.dataframe(st.session_state.leads)
+# 2. View Data & Edit
+st.write("### Manage Leads")
+st.info("📝 You can edit the Company Name directly in the table below. Check the box to select companies for emailing.")
+
+edited_df = st.data_editor(
+    st.session_state.leads,
+    column_config={
+        "Select": st.column_config.CheckboxColumn(
+            "Select",
+            help="Select to send email",
+            default=False,
+        ),
+        "Status": st.column_config.TextColumn(
+            "Status",
+            disabled=True
+        )
+    },
+    disabled=["Status"],
+    hide_index=True,
+    key="leads_editor"
+)
+
+# Update session state if changed
+if not edited_df.equals(st.session_state.leads):
+    st.session_state.leads = edited_df
+    save_leads()
 
 # 3. Control Center
 st.divider()
 st.write("### Email Operations")
 
-daily_limit = st.slider("Daily Limit", 1, 10, 5)
+# Filter selected rows
+selected_indices = st.session_state.leads[st.session_state.leads["Select"]].index.tolist()
+selected_count = len(selected_indices)
 
-if st.button(f"Send Batch ({daily_limit} emails)"):
-    pending_leads = st.session_state.leads[st.session_state.leads["Status"] == "Pending"].head(daily_limit)
-    
-    if pending_leads.empty:
-        st.warning("No pending leads found!")
+if st.button(f"Send Email to {selected_count} Selected Companies", type="primary", disabled=selected_count==0):
+    if selected_count == 0:
+        st.warning("Please select at least one company from the table above.")
     else:
         progress_bar = st.progress(0)
-        for index, row in pending_leads.iterrows():
+        for i, index in enumerate(selected_indices):
+            row = st.session_state.leads.loc[index]
+            
             subj, body = get_email_content(row['Company'], row['Country'])
             
             # Determine Attachment
@@ -399,16 +432,19 @@ if st.button(f"Send Batch ({daily_limit} emails)"):
             
             if success:
                 st.session_state.leads.at[index, 'Status'] = f"Sent {datetime.now().strftime('%Y-%m-%d')}"
+                st.session_state.leads.at[index, 'Select'] = False # Uncheck after sending
                 st.toast(f"Sent to {row['Company']}")
             else:
                 st.toast(f"Failed to send to {row['Company']}")
             
-            progress_bar.progress((index + 1) / len(pending_leads))
+            progress_bar.progress((i + 1) / selected_count)
             time.sleep(1) # Small delay to be nice to Gmail server
             
         save_leads() # Save status updates
         st.success("Batch completed!")
         st.rerun()
+            
+
 
 # 4. Preview Template
 st.divider()
