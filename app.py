@@ -288,30 +288,64 @@ if start_scraping:
                         
                     soup = BeautifulSoup(response.text, 'html.parser')
                     
-                    # --- SMART CRAWLING FOR LISTICLES ---
-                    # Check if this is a "Top 10" style article
+                    # --- SMART CRAWLING V2: STRICT MEDIA FILTERING ---
                     page_title = soup.title.string.lower() if soup.title else ""
-                    is_listicle = any(x in page_title for x in ['top ', 'best ', 'list ', 'startups in', 'companies in'])
+                    url_lower = url.lower()
                     
-                    target_urls = [url] # Default: just scrape this page
+                    # 1. Identify if this is a Media/News/Listicle site
+                    # We do NOT want emails from these pages (usually press/editor emails)
+                    # We ONLY want to follow links FROM these pages to the actual startups.
                     
-                    if is_listicle:
-                        if debug_mode: log_container.text(f"  📄 Detected listicle/aggregator. Looking for external links...")
+                    listicle_keywords = ['top ', 'best ', 'list ', 'startups in', 'companies in', 'guide', 'blog', 'news', 'article', 'directory']
+                    media_domains = [
+                        'medium.com', 'forbes.com', 'techcrunch.com', 'venturebeat.com', 
+                        'analyticsindiamag.com', 'analyticsinsight.net', 'fortune.com', 
+                        'businessinsider.com', 'analyticsvidhya.com', 'builtin.com',
+                        'clutch.co', 'goodfirms.co', 'capterra.com', 'g2.com', 'crunchbase.com'
+                    ]
+                    
+                    is_media_site = any(d in url_lower for d in media_domains)
+                    is_listicle_title = any(x in page_title for x in listicle_keywords)
+                    
+                    # Default: Scrape the page itself
+                    target_urls = [url] 
+                    
+                    if is_media_site or is_listicle_title:
+                        if debug_mode: log_container.text(f"  📰 Detected Media/Listicle. IGNORING emails on this page. Extracting external links...")
+                        
+                        # CLEAR target_urls so we don't scrape the news site itself
+                        target_urls = []
+                        
                         external_links = set()
                         for a in soup.find_all('a', href=True):
                             href = a['href']
-                            # Basic filter for external links
-                            if href.startswith('http') and urlparse(href).netloc != urlparse(url).netloc:
-                                # Filter out social media and common tech giants
-                                if not any(x in href for x in ['linkedin', 'twitter', 'facebook', 'instagram', 'youtube', 'google', 'apple', 'microsoft', 'medium', 'wikipedia']):
-                                    external_links.add(href)
+                            try:
+                                href_domain = urlparse(href).netloc
+                                current_domain = urlparse(url).netloc
+                                
+                                # Must be a valid http link and NOT the same domain
+                                if href.startswith('http') and href_domain and href_domain != current_domain:
+                                    # Filter out social media, tech giants, and other noise
+                                    noise_domains = [
+                                        'linkedin', 'twitter', 'facebook', 'instagram', 'youtube', 
+                                        'google', 'apple', 'microsoft', 'medium', 'wikipedia', 
+                                        'amazon', 'cloudflare', 'whatsapp', 'telegram', 'tiktok'
+                                    ]
+                                    if not any(x in href for x in noise_domains):
+                                        external_links.add(href)
+                            except:
+                                pass
                         
-                        # Take top 5 external links to visit
+                        # Take top 10 external links to visit
                         if external_links:
-                            target_urls = list(external_links)[:5]
-                            if debug_mode: log_container.text(f"  ➡️ Found {len(external_links)} external links. Visiting top {len(target_urls)}...")
+                            # Prioritize links that look like root domains (e.g. "https://company.com/" vs "https://company.com/blog/post")
+                            sorted_links = sorted(list(external_links), key=lambda x: len(urlparse(x).path))
+                            target_urls = sorted_links[:10]
+                            if debug_mode: log_container.text(f"  ➡️ Found {len(external_links)} external links. Visiting top {len(target_urls)} candidates...")
+                        else:
+                            if debug_mode: log_container.text(f"  ⚠️ No external links found on this listicle.")
                     
-                    # --- PROCESS URLS (Either the main one or the extracted ones) ---
+                    # --- PROCESS URLS ---
                     for target_url in target_urls:
                         try:
                             if target_url != url:
