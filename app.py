@@ -35,7 +35,8 @@ else:
     st.session_state.leads["Select"] = st.session_state.leads["Select"].fillna(False).astype(bool)
 
 def save_leads():
-    st.session_state.leads.to_csv(CSV_FILE, index=False)
+    if isinstance(st.session_state.leads, pd.DataFrame):
+        st.session_state.leads.to_csv(CSV_FILE, index=False)
 
 # --- SCRAPING FUNCTION ---
 def extract_emails_from_html(soup):
@@ -454,6 +455,14 @@ with st.expander("Add New Lead Manually"):
 st.write("### Manage Leads")
 st.info("📝 You can edit the Company Name directly in the table below. Check the box to select companies for emailing.")
 
+# Deduplication Button
+if st.button("🧹 Clean Duplicates (Keep 1 per Company)"):
+    # Keep the first entry for each company name, but prefer ones with 'Pending' status if possible
+    st.session_state.leads = st.session_state.leads.sort_values('Status').drop_duplicates(subset=['Company'], keep='first').sort_index()
+    save_leads()
+    st.success("Duplicates removed! Kept 1 email per company.")
+    st.rerun()
+
 edited_df = st.data_editor(
     st.session_state.leads,
     column_config={
@@ -472,10 +481,10 @@ edited_df = st.data_editor(
     key="leads_editor"
 )
 
-# Update session state if changed
 if not edited_df.equals(st.session_state.leads):
     st.session_state.leads = edited_df
     save_leads()
+    st.rerun()
 
 # 3. Control Center
 st.divider()
