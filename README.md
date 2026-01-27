@@ -6,10 +6,11 @@
 Built with **Python** and **Streamlit**, this dashboard serves as your command center for your internship search in Europe (Paris, Barcelona, Berlin, etc.).
 
 ## ✨ Features
-*   **🔍 Smart Scraping:** Automatically searches the web for companies matching your criteria (e.g., "Data Science Startup Paris").
-*   **📧 Email Discovery:** Extracts contact emails (`contact@`, `jobs@`, `hr@`) from company websites using intelligent parsing.
-*   **🛡️ Anti-Spam Filtering:** Automatically ignores junk emails and generic domains to ensure high-quality leads.
-*   **📝 Template Management:** Generates professional, localized email drafts (French/English) based on the target country.
+*   **🔍 Smart Scraping:** automatically searches the web for companies matching your criteria. It now uses improved logic to detect accurate company names and filter out aggregation sites.
+*   **📧 Email Discovery:** Extracts contact emails (`contact@`, `jobs@`, `hr@`) using intelligent parsing and validation.
+*   **🛡️ Strong Filtering:** Automatically ignores junk emails (w3.org, sentry.io, etc.) and filters out generic lists to ensure high-quality leads.
+*   **⚙️ Fully Configurable:** Customize your profile, CVs, and email templates directly via `.env` without touching the code.
+*   **📝 Dynamic Templates:** Supports placeholder variables (`{company_name}`, `{signature}`) for personalized outreach in multiple languages.
 *   **📊 Lead Management:** Tracks the status of your applications (Pending, Sent) in a clean, editable table.
 
 ## 🛠️ Installation & Setup
@@ -29,12 +30,42 @@ pip install -r requirements.txt
 Or create a virtual environement if you are on linux.
 
 ### 3. Configure Environment
-Create a `.env` file in the root directory (if not already present) and add your email credentials:
-```ini
-MY_EMAIL=your_email@gmail.com
-MY_APP_PASSWORD=your_google_app_password
-```
-*> **Note:** You need to generate an "App Password" in your Google Account settings (Security > 2-Step Verification > App passwords). Do not use your regular login password.*
+This project uses a `.env` file to manage your personal details, credentials, and email templates. This ensures your data remains private and easily editable.
+
+1.  **Copy the example file:**
+    ```bash
+    cp .env.example .env
+    ```
+2.  **Edit `.env` with your details:**
+    Open the `.env` file and fill in the following:
+
+    *   **Gmail Credentials:**
+        ```ini
+        MY_EMAIL=your_email@gmail.com
+        MY_APP_PASSWORD=xxxx xxxx xxxx xxxx
+        ```
+        *> **Note:** You need to generate an "App Password" in your Google Account settings (Security > 2-Step Verification > App passwords).*
+
+    *   **Applicant Details:** (Used in your email signature)
+        ```ini
+        APPLICANT_NAME=John Doe
+        APPLICANT_PHONE=+1 234 567 890
+        APPLICANT_WEBSITE=www.johndoe.com
+        APPLICANT_LINKEDIN=https://linkedin.com/in/johndoe
+        ```
+
+    *   **CV Paths:** (Point to your PDF files)
+        ```ini
+        CV_FILE_FR=docs/My_French_CV.pdf
+        CV_FILE_EN=docs/My_English_CV.pdf
+        ```
+
+    *   **Email Templates:**
+        You can fully customize the subject and body of your emails in the `.env` file. Use the placeholders `{company_name}` and `{signature}` to dynamically insert data.
+        ```ini
+        EMAIL_SUBJECT_EN=Application for {company_name}
+        EMAIL_BODY_EN="Hello, I would like to work at {company_name}...\n\n{signature}"
+        ```
 
 ## 🚀 How to Run
 To launch the dashboard, open your terminal and run:
@@ -59,7 +90,8 @@ The application will open automatically in your default web browser (usually at 
 
 3.  **Send Emails:**
     *   Use the "Email Operations" section to send batches of emails.
-    *   **Important:** The app is currently in "Demo Mode" for sending (it simulates sending). To enable real sending, uncomment the `send_email` line in `app.py`.
+    *   Select the companies you want to contact and click "Send Email".
+    *   The app will automatically attach the correct CV (French or English) based on the country.
 
 ## ⚠️ Disclaimer
 This tool is for personal use. Please respect website Terms of Service and anti-spam regulations (GDPR in Europe). Do not use this for mass marketing or spamming.
