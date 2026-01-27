@@ -26,6 +26,7 @@ Open a terminal in the project folder and run:
 ```bash
 pip install -r requirements.txt
 ```
+Or create a virtual environement if you are on linux.
 
 ### 3. Configure Environment
 Create a `.env` file in the root directory (if not already present) and add your email credentials:

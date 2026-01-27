@@ -19,6 +19,24 @@ from urllib.parse import urlparse
 load_dotenv()
 MY_EMAIL = os.getenv("MY_EMAIL")
 MY_APP_PASSWORD = os.getenv("MY_APP_PASSWORD")
+
+# Applicant Details (Defaults to placeholders if not in .env)
+APPLICANT_NAME = os.getenv("APPLICANT_NAME", "Jane Doe")
+APPLICANT_PHONE = os.getenv("APPLICANT_PHONE", "+1 234 567 890")
+APPLICANT_WEBSITE = os.getenv("APPLICANT_WEBSITE", "www.janedoe.com")
+APPLICANT_LINKEDIN = os.getenv("APPLICANT_LINKEDIN", "")
+
+# CV Files
+CV_FILE_FR = os.getenv("CV_FILE_FR", "docs/CV_French.pdf")
+CV_FILE_EN = os.getenv("CV_FILE_EN", "docs/CV_English.pdf")
+
+# Email Templates
+EMAIL_SUBJECT_FR = os.getenv("EMAIL_SUBJECT_FR", "Candidature Spontanée - {company_name}")
+EMAIL_BODY_FR = os.getenv("EMAIL_BODY_FR", "Bonjour,\n\nJe postule chez {company_name}.\n\nCordialement,\n{signature}")
+
+EMAIL_SUBJECT_EN = os.getenv("EMAIL_SUBJECT_EN", "Internship Application - {company_name}")
+EMAIL_BODY_EN = os.getenv("EMAIL_BODY_EN", "Dear Manager,\n\nI am applying to {company_name}.\n\nBest regards,\n{signature}")
+
 CSV_FILE = "leads.csv"
 
 # --- DATA LOADING ---
@@ -39,6 +57,68 @@ def save_leads():
         st.session_state.leads.to_csv(CSV_FILE, index=False)
 
 # --- SCRAPING FUNCTION ---
+def extract_company_name(soup, url):
+    """
+    Robust way to find company name from a website.
+    """
+    candidates = []
+
+    # 1. Open Graph Site Name (High Confidence)
+    og_site_name = soup.find("meta", property="og:site_name")
+    if og_site_name and og_site_name.get("content"):
+        candidates.append(og_site_name["content"].strip())
+
+    # 2. Schema.org Organization (High Confidence)
+    import json
+    for script in soup.find_all('script', type='application/ld+json'):
+        try:
+            if not script.string: continue
+            data = json.loads(script.string)
+            if isinstance(data, dict):
+                if data.get('@type') == 'Organization' and data.get('name'):
+                    candidates.append(data['name'])
+            elif isinstance(data, list):
+                for item in data:
+                    if item.get('@type') == 'Organization' and item.get('name'):
+                        candidates.append(item['name'])
+        except:
+            pass
+            
+    # 3. Meta Title (Medium Confidence - often needs cleaning)
+    if soup.title and soup.title.string:
+        title = soup.title.string.strip()
+        # Common patterns: "Company Name - Home", "Welcome to Company Name", "Company Name | Tagline"
+        separators = [' - ', ' | ', ' : ', ' – ']
+        clean_title = title
+        for sep in separators:
+            parts = title.split(sep)
+            if len(parts) > 1:
+                # If the first part is short and looks like a name, take it
+                if len(parts[0]) < 30:
+                    clean_title = parts[0]
+                # If the last part is the brand
+                elif len(parts[-1]) < 30:
+                    clean_title = parts[-1] 
+        candidates.append(clean_title)
+        
+    # 4. Domain Name (Fallback / Baseline)
+    domain_parts = urlparse(url).netloc.split('.')
+    if domain_parts[0] == 'www':
+        domain_name = domain_parts[1].capitalize()
+    else:
+        domain_name = domain_parts[0].capitalize()
+    candidates.append(domain_name)
+    
+    # Selection Strategy
+    # Return the first candidate that is not in a blacklist
+    blacklist = ["Home", "Index", "Welcome", "Page", "En", "Ue", "De", "Fr", "Uk", "Us", "Web", "Site", "Unknown", "My Site", "WordPress"]
+    
+    for c in candidates:
+        if c and c.strip() and c.strip() not in blacklist and len(c) > 2 and len(c) < 50:
+            return c.strip()
+            
+    return domain_name
+
 def extract_emails_from_html(soup):
     emails = set()
     # 1. Look for mailto links (most reliable)
@@ -53,14 +133,27 @@ def extract_emails_from_html(soup):
     emails.update(found)
     
     # 3. Filter junk
-    junk_domains = ['example.com', 'w3.org', 'sentry.io', 'u-paris.fr', 'google.com', 'linkedin.com', 'twitter.com', 'facebook.com']
-    junk_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']
+    junk_domains = [
+        'example.com', 'w3.org', 'sentry.io', 'u-paris.fr', 'google.com', 'linkedin.com', 'twitter.com', 'facebook.com',
+        'instagram.com', 'youtube.com', 'github.com', 'wordpress.org', 'cloudflare.com', 'medium.com'
+    ]
+    junk_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.js', '.css']
+    junk_prefixes = ['noreply', 'no-reply', 'admin', 'hostmaster', 'postmaster', 'privacy', 'webmaster']
     
     valid_emails = []
     for e in emails:
         e = e.lower().strip()
-        if not any(d in e for d in junk_domains) and not any(e.endswith(ext) for ext in junk_extensions):
-            valid_emails.append(e)
+        
+        # Syntax Check
+        if len(e) < 5 or len(e) > 50: continue
+        
+        domain = e.split('@')[-1]
+        
+        if any(d in domain for d in junk_domains): continue
+        if any(e.endswith(ext) for ext in junk_extensions): continue
+        if any(e.startswith(p) for p in junk_prefixes): continue
+        
+        valid_emails.append(e)
             
     return list(set(valid_emails))
 
@@ -141,52 +234,21 @@ def find_emails_from_web(query, num_results=10):
 
 # --- EMAIL TEMPLATES ---
 def get_email_content(company_name, country):
-    # DYNAMIC CONTENT BASED ON RESUME
-    # Projects: Redaking (LLM) , SynapsX (Finance) 
-    # Education: Double MSc Data Science/FinTech 
+    # DYNAMIC CONTENT FROM .ENV
     
-    if country.lower() == "france":
-        subject = f"Candidature Spontanée - Data Scientist / FinTech (Master 2) - {company_name}"
-        body = f"""
-Bonjour,
-
-Actuellement étudiant en Double Master Data Science & FinTech (Université de Rennes & Université de Trento), je me permets de vous contacter pour une candidature spontanée en tant que Data Scientist ou Développeur Logiciel pour mon stage de fin d'études (début février 2026).
-
-Votre expertise chez {company_name} m'intéresse particulièrement. De mon côté, j'ai acquis de solides bases techniques (Python, C, SQL) et développé plusieurs projets concrets :
-
-- Redaking Project : Développement d'un assistant LLM local (Python + APIs + Ollama) avec gestion de mémoire persistante.
-- SynapsX : Création d'un outil de recommandation d'investissement boursier basé sur des algorithmes de prédiction.
-- Développement Web** : J'ai également travaillé sur le développement Fullstack lors d'un précédent poste.
-
-Je serais ravi de pouvoir échanger avec vous sur la manière dont je pourrais contribuer aux projets de {company_name}. Vous trouverez mon CV en pièce jointe.
-
-Bien cordialement,
-
-Wail Ameur
-+33 6 95 02 72 99
-www.wailameur.com
-"""
-    else:
-        subject = f"Internship Application - Data Scientist / FinTech (Final Year MSc) - {company_name}"
-        body = f"""
-Dear Hiring Manager,
-
-I am currently a Double Master’s student in Data Science & FinTech (University of Rennes & University of Trento), writing to express my interest in a Data Scientist or Software Developer internship at {company_name} starting February 2026.
-
-I have built a strong technical foundation in Python, C, and SQL, applying these skills in complex projects:
-
-- Redaking Project: Developed a local LLM assistant (Python + APIs + Ollama) capable of file management and persistent memory.
-- SynapsX: Built software for stock market investment recommendations using prediction algorithms.
-- Web Development: Previous experience in Fullstack development (PHP/JS).
-
-I am eager to bring my background in applied AI and financial analysis to the team at {company_name}. My resume is attached.
-
-Best regards,
-
-Wail Ameur
-+33 6 95 02 72 99
-www.wailameur.com
-"""
+    signature = f"\n{APPLICANT_NAME}\n{APPLICANT_PHONE}\n{APPLICANT_WEBSITE}\n{APPLICANT_LINKEDIN}"
+    
+    try:
+        if country.lower() == "france":
+            subject = EMAIL_SUBJECT_FR.replace("{company_name}", company_name)
+            body = EMAIL_BODY_FR.replace("{company_name}", company_name).replace("{signature}", signature)
+        else:
+            subject = EMAIL_SUBJECT_EN.replace("{company_name}", company_name)
+            body = EMAIL_BODY_EN.replace("{company_name}", company_name).replace("{signature}", signature)
+    except Exception as e:
+        subject = f"Application - {company_name}"
+        body = f"Error generating email body: {e}"
+        
     return subject, body
 
 # --- SENDING FUNCTION ---
@@ -388,19 +450,7 @@ if start_scraping:
                                 s.write(f"🎉 Found {len(valid_emails)} email(s) at {target_url}")
                                 
                                 # Better Company Name Extraction
-                                company_name = "Unknown"
-                                
-                                # 1. Try Open Graph Site Name
-                                og_site_name = soup_target.find("meta", property="og:site_name")
-                                if og_site_name and og_site_name.get("content"):
-                                    company_name = og_site_name["content"].strip()
-                                else:
-                                    # 2. Try Domain Name (cleaner than Title)
-                                    domain = urlparse(target_url).netloc
-                                    # Remove www. and .com/.fr etc
-                                    if domain.startswith("www."):
-                                        domain = domain[4:]
-                                    company_name = domain.split('.')[0].capitalize()
+                                company_name = extract_company_name(soup_target, target_url)
                                 
                                 # Try to infer country from TLD
                                 country = "International"
@@ -506,9 +556,9 @@ if st.button(f"Send Email to {selected_count} Selected Companies", type="primary
             
             # Determine Attachment
             if row['Country'] == "France":
-                attachment = "docs/Wail_Ameur_CV.pdf"
+                attachment = CV_FILE_FR
             else:
-                attachment = "docs/Wail_Ameur_Resume.pdf"
+                attachment = CV_FILE_EN
             
             # Send Email
             success = send_email(row['Email'], subj, body, attachment_path=attachment) 
