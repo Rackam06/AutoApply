@@ -67,6 +67,13 @@ This project uses a `.env` file to manage your personal details, credentials, an
         EMAIL_BODY_EN="Hello, I would like to work at {company_name}...\n\n{signature}"
         ```
 
+### 4. Add your CVs
+Since the `docs/` folder is ignored by git (to protect your privacy), you need to create it manually:
+
+1.  Create a folder named `docs` in the project root.
+2.  Paste your PDF resumes into this folder.
+3.  Ensure the filenames match what you put in your `.env` file (e.g., `CV_French.pdf`).
+
 ## 🚀 How to Run
 To launch the dashboard, open your terminal and run:
 
