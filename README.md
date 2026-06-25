@@ -1,19 +1,19 @@
-# 🚀 AutoApply - Internship Hunter Bot
+# AutoApply - Internship Hunter Bot
 
 ## Overview
 **AutoApply** is a specialized automation tool designed to help students and job seekers find and apply for internships efficiently. It automates the process of discovering companies (specifically startups and tech firms), finding their direct contact information, and preparing personalized cold emails.
 
 Built with **Python** and **Streamlit**, this dashboard serves as your command center for your internship search in Europe (Paris, Barcelona, Berlin, etc.).
 
-## ✨ Features
-*   **🔍 Smart Scraping:** automatically searches the web for companies matching your criteria. It now uses improved logic to detect accurate company names and filter out aggregation sites.
-*   **📧 Email Discovery:** Extracts contact emails (`contact@`, `jobs@`, `hr@`) using intelligent parsing and validation.
-*   **🛡️ Strong Filtering:** Automatically ignores junk emails (w3.org, sentry.io, etc.) and filters out generic lists to ensure high-quality leads.
-*   **⚙️ Fully Configurable:** Customize your profile, CVs, and email templates directly via `.env` without touching the code.
-*   **📝 Dynamic Templates:** Supports placeholder variables (`{company_name}`, `{signature}`) for personalized outreach in multiple languages.
-*   **📊 Lead Management:** Tracks the status of your applications (Pending, Sent) in a clean, editable table.
+## Features
+*   **Smart Scraping:** automatically searches the web for companies matching your criteria. It now uses improved logic to detect accurate company names and filter out aggregation sites.
+*   **Email Discovery:** Extracts contact emails (`contact@`, `jobs@`, `hr@`) using intelligent parsing and validation.
+*   **Strong Filtering:** Automatically ignores junk emails (w3.org, sentry.io, etc.) and filters out generic lists to ensure high-quality leads.
+*   **Fully Configurable:** Customize your profile, CVs, and email templates directly via `.env` without touching the code.
+*   **Dynamic Templates:** Supports placeholder variables (`{company_name}`, `{signature}`) for personalized outreach in multiple languages.
+*   **Lead Management:** Tracks the status of your applications (Pending, Sent) in a clean, editable table.
 
-## 🛠️ Installation & Setup
+## Installation & Setup
 
 ### Prerequisites
 *   Python 3.8 or higher
@@ -74,7 +74,7 @@ Since the `docs/` folder is ignored by git (to protect your privacy), you need t
 2.  Paste your PDF resumes into this folder.
 3.  Ensure the filenames match what you put in your `.env` file (e.g., `CV_French.pdf`).
 
-## 🚀 How to Run
+## How to Run
 To launch the dashboard, open your terminal and run:
 
 ```bash
@@ -83,7 +83,7 @@ streamlit run app.py
 
 The application will open automatically in your default web browser (usually at `http://localhost:8501`).
 
-## 💡 Usage Guide
+## Usage Guide
 
 1.  **Auto-Scrape:**
     *   Go to the "Auto-Scrape Leads" section.
@@ -100,5 +100,5 @@ The application will open automatically in your default web browser (usually at 
     *   Select the companies you want to contact and click "Send Email".
     *   The app will automatically attach the correct CV (French or English) based on the country.
 
-## ⚠️ Disclaimer
+## Disclaimer
 This tool is for personal use. Please respect website Terms of Service and anti-spam regulations (GDPR in Europe). Do not use this for mass marketing or spamming.
