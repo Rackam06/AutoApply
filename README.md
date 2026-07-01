@@ -1,104 +1,123 @@
-# 🚀 AutoApply - Internship Hunter Bot
+# AutoApply 🚀
 
-## Overview
-**AutoApply** is a specialized automation tool designed to help students and job seekers find and apply for internships efficiently. It automates the process of discovering companies (specifically startups and tech firms), finding their direct contact information, and preparing personalized cold emails.
+A Streamlit web app that **finds real company emails**, **scores them**, and lets you **send personalised job applications** in bulk.
 
-Built with **Python** and **Streamlit**, this dashboard serves as your command center for your internship search in Europe (Paris, Barcelona, Berlin, etc.).
+Originally built for Data Science & FinTech internship hunting — but works for any job search. Just change the email templates in `.env`.
 
-## ✨ Features
-*   **🔍 Smart Scraping:** automatically searches the web for companies matching your criteria. It now uses improved logic to detect accurate company names and filter out aggregation sites.
-*   **📧 Email Discovery:** Extracts contact emails (`contact@`, `jobs@`, `hr@`) using intelligent parsing and validation.
-*   **🛡️ Strong Filtering:** Automatically ignores junk emails (w3.org, sentry.io, etc.) and filters out generic lists to ensure high-quality leads.
-*   **⚙️ Fully Configurable:** Customize your profile, CVs, and email templates directly via `.env` without touching the code.
-*   **📝 Dynamic Templates:** Supports placeholder variables (`{company_name}`, `{signature}`) for personalized outreach in multiple languages.
-*   **📊 Lead Management:** Tracks the status of your applications (Pending, Sent) in a clean, editable table.
+---
 
-## 🛠️ Installation & Setup
+## Features
 
-### Prerequisites
-*   Python 3.8 or higher
-*   A Gmail account (for sending emails)
+| Feature | Details |
+|---|---|
+| **Smart scraping** | DuckDuckGo search + enriched queries, media/listicle detection, sub-page crawling (contact, about, careers, impressum…) |
+| **Email scoring (0–100)** | Company-domain emails score higher; jobs/careers prefixes score highest; generic free-email (gmail, hotmail…) are penalised |
+| **Email type classification** | `jobs`, `contact`, `person`, `info`, `generic` |
+| **Country detection** | Inferred from TLD (`.fr` → France, `.de` → Germany, 20+ countries) |
+| **Editable lead table** | Edit company names, filter by score, select rows for sending |
+| **Batch email sending** | Gmail SMTP with CV attachment; dry-run mode to preview before sending |
+| **CSV export** | One-click export of your lead list |
 
-### 1. Clone or Download
-Download this project to your local machine.
+---
 
-### 2. Install Dependencies
-Open a terminal in the project folder and run:
+## Quick Start
+
+### 1. Clone & install
+
 ```bash
+git clone https://github.com/yourname/AutoApply.git
+cd AutoApply
+python -m venv venv
+# Windows
+venv\Scripts\activate
+# macOS / Linux
+source venv/bin/activate
+
 pip install -r requirements.txt
 ```
-Or create a virtual environement if you are on linux.
 
-### 3. Configure Environment
-This project uses a `.env` file to manage your personal details, credentials, and email templates. This ensures your data remains private and easily editable.
+### 2. Configure
 
-1.  **Copy the example file:**
-    ```bash
-    cp .env.example .env
-    ```
-2.  **Edit `.env` with your details:**
-    Open the `.env` file and fill in the following:
+```bash
+cp .env.example .env
+# Edit .env with your Gmail credentials, name, and CV paths
+```
 
-    *   **Gmail Credentials:**
-        ```ini
-        MY_EMAIL=your_email@gmail.com
-        MY_APP_PASSWORD=xxxx xxxx xxxx xxxx
-        ```
-        *> **Note:** You need to generate an "App Password" in your Google Account settings (Security > 2-Step Verification > App passwords).*
+> **Gmail App Password** – you need a [Google App Password](https://support.google.com/accounts/answer/185833), not your regular Gmail password.
 
-    *   **Applicant Details:** (Used in your email signature)
-        ```ini
-        APPLICANT_NAME=John Doe
-        APPLICANT_PHONE=+1 234 567 890
-        APPLICANT_WEBSITE=www.johndoe.com
-        APPLICANT_LINKEDIN=https://linkedin.com/in/johndoe
-        ```
+### 3. Add your CV(s)
 
-    *   **CV Paths:** (Point to your PDF files)
-        ```ini
-        CV_FILE_FR=docs/My_French_CV.pdf
-        CV_FILE_EN=docs/My_English_CV.pdf
-        ```
+Create a `docs/` folder and drop your PDF(s) inside:
 
-    *   **Email Templates:**
-        You can fully customize the subject and body of your emails in the `.env` file. Use the placeholders `{company_name}` and `{signature}` to dynamically insert data.
-        ```ini
-        EMAIL_SUBJECT_EN=Application for {company_name}
-        EMAIL_BODY_EN="Hello, I would like to work at {company_name}...\n\n{signature}"
-        ```
+```
+docs/
+  CV_English.pdf
+  CV_French.pdf   (optional)
+```
 
-### 4. Add your CVs
-Since the `docs/` folder is ignored by git (to protect your privacy), you need to create it manually:
-
-1.  Create a folder named `docs` in the project root.
-2.  Paste your PDF resumes into this folder.
-3.  Ensure the filenames match what you put in your `.env` file (e.g., `CV_French.pdf`).
-
-## 🚀 How to Run
-To launch the dashboard, open your terminal and run:
+### 4. Run
 
 ```bash
 streamlit run app.py
 ```
 
-The application will open automatically in your default web browser (usually at `http://localhost:8501`).
+Open [http://localhost:8501](http://localhost:8501) in your browser.
 
-## 💡 Usage Guide
+---
 
-1.  **Auto-Scrape:**
-    *   Go to the "Auto-Scrape Leads" section.
-    *   Enter a query like *"FinTech startup Paris contact email"* or *"AI company Berlin jobs"*.
-    *   Adjust the number of pages to scan.
-    *   Click **Start Scraping** and watch the bot find leads.
+## Usage Guide
 
-2.  **Review Leads:**
-    *   Check the table for found companies.
-    *   You can manually add leads if you find them elsewhere.
+### Scraping
+1. Enter a search query in the **Auto-Scrape** panel.
+   - Be specific: `"AI startup Berlin hiring intern"` works much better than `"AI startup"`
+   - Adding a city or country targets local companies
+2. Set **Max URLs** (10–20 is usually enough to start)
+3. Click **Start Scraping** – the bot will:
+   - Run enriched DuckDuckGo queries
+   - Skip job boards and social networks
+   - Detect media/listicle pages and follow their company links instead
+   - Crawl contact/careers sub-pages when no email is on the homepage
+4. Results appear in the **Manage Leads** table with scores
 
-3.  **Send Emails:**
-    *   Use the "Email Operations" section to send batches of emails.
-    *   Select the companies you want to contact and click "Send Email".
-    *   The app will automatically attach the correct CV (French or English) based on the country.
+### Understanding Scores
+| Score | Meaning |
+|---|---|
+| ≥ 70 | Excellent – recruitment or contact email at company domain |
+| 50–69 | Good – likely useful contact address |
+| 30–49 | Speculative – generic address, worth a try |
+| < 30 | Weak – may be a free-email or noisy address |
 
-## ⚠️ Disclaimer
-This tool is for personal use. Please respect website Terms of Service and anti-spam regulations (GDPR in Europe). Do not use this for mass marketing or spamming.
+### Sending Emails
+1. Use **Select High-Score (≥60)** to auto-select the best leads
+2. Make sure **Dry run** is checked first to preview your emails
+3. Once happy, uncheck Dry run and click **Send**
+4. A rate-limit delay between sends is applied automatically
+
+---
+
+## Customising Templates
+
+Edit `EMAIL_SUBJECT_FR/EN` and `EMAIL_BODY_FR/EN` in your `.env` file.  
+Available placeholders: `{company_name}`, `{signature}`.
+
+---
+
+## Sharing with Others
+
+1. Fork / copy the repo
+2. Each person creates their own `.env` from `.env.example`
+3. Everyone puts their own CV in `docs/`
+4. `leads.csv` is gitignored — each user keeps their own leads locally
+
+---
+
+## Requirements
+
+- Python 3.11+
+- A Gmail account with [App Passwords](https://support.google.com/accounts/answer/185833) enabled
+
+---
+
+## Legal Note
+
+Web scraping publicly available contact information is generally legal, but always respect `robots.txt` and a site's terms of service. This tool is intended for personal job-application use only.
