@@ -53,13 +53,38 @@ COLUMNS  = ["Select", "Company", "Website", "Email", "Email Type", "Score", "Cou
 
 # ─── DOMAIN / KEYWORD LISTS ───────────────────────────────────────────────────
 
-SKIP_DOMAINS = {
-    "linkedin.com", "indeed.com", "glassdoor.com", "welcometothejungle.com",
-    "youtube.com", "facebook.com", "instagram.com", "twitter.com", "x.com",
-    "tiktok.com", "pinterest.com", "reddit.com", "quora.com", "snapchat.com",
+SOCIAL_DOMAINS = {
+    "linkedin.com", "youtube.com", "facebook.com", "instagram.com",
+    "twitter.com", "x.com", "tiktok.com", "pinterest.com", "reddit.com",
+    "quora.com", "snapchat.com",
+}
+
+# Job boards / aggregators — we never scrape emails FROM these directly, but
+# their listing pages link out to the real company sites, so we crawl them
+# for outbound links instead of skipping them outright.
+JOB_BOARD_DOMAINS = {
+    "indeed.com", "glassdoor.com", "welcometothejungle.com",
     "monster.com", "ziprecruiter.com", "simplyhired.com", "careerbuilder.com",
     "jooble.org", "talent.com", "remote.co", "weworkremotely.com",
+    "themuse.com", "jobteaser.com", "hellowork.com", "apec.fr",
+    "wttj.co", "remoteok.com", "jobicy.com", "workingnomads.com",
+    "otta.com", "himalayas.app",
 }
+
+# ATS platforms that host a REAL company's job page on a company subdomain
+# (e.g. acme.greenhouse.io). These are legitimate company pages, not
+# aggregators — we scrape them directly and derive the company name from
+# the subdomain rather than treating "greenhouse.io" as the company.
+ATS_DOMAINS = {
+    "greenhouse.io", "lever.co", "workable.com", "breezy.hr",
+    "smartrecruiters.com", "ashbyhq.com", "bamboohr.com",
+    "teamtailor.com", "recruitee.com", "personio.com", "jobvite.com",
+    "myworkdayjobs.com",
+}
+
+# Kept for backwards compatibility with anything that still expects a single
+# "never touch" set — social media only, since job boards are now crawled.
+SKIP_DOMAINS = SOCIAL_DOMAINS
 
 # Platforms / directories — never scrape; emails here are platform support, not companies
 AGGREGATOR_DOMAINS = {
@@ -180,6 +205,34 @@ APP_TYPE_TERMS = {
     "Spontaneous application": ["careers", "contact", "join us", "recrutement"],
 }
 
+# Common tech-field phrasing variants. Search engines treat "fullstack",
+# "full stack" and "full-stack" as different tokens, so a query built from
+# only what the user typed misses most real postings. This expands a field
+# into the alternate spellings people actually use in job ads.
+FIELD_SYNONYMS = {
+    "fullstack": ["full stack", "full-stack"],
+    "full stack": ["fullstack", "full-stack"],
+    "full-stack": ["fullstack", "full stack"],
+    "backend": ["back-end", "back end"],
+    "back-end": ["backend", "back end"],
+    "frontend": ["front-end", "front end"],
+    "front-end": ["frontend", "front end"],
+    "devops": ["dev ops"],
+    "datascience": ["data science"],
+    "data science": ["data scientist"],
+    "machine learning": ["ml engineer", "ai engineer"],
+    "ai": ["artificial intelligence"],
+    "fintech": ["financial technology"],
+    "ux": ["ui/ux", "user experience"],
+    "ui": ["ui/ux", "user interface"],
+}
+
+# Job boards worth targeting directly via site: search — we now know how to
+# crawl their listing pages for outbound company links.
+SITE_SEARCH_BOARDS = ["indeed.com", "welcometothejungle.com", "weworkremotely.com"]
+# ATS platforms — a hit here is a real company career page.
+SITE_SEARCH_ATS = ["greenhouse.io", "lever.co"]
+
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -228,17 +281,43 @@ def save_leads() -> None:
 
 
 def normalize_domain(url_or_domain: str) -> str:
-    """Return bare domain without www."""
+    """Return bare domain without a leading 'www.'."""
     if "://" in url_or_domain:
         url_or_domain = urlparse(url_or_domain).netloc
-    return url_or_domain.lower().lstrip("www.")
+    domain = url_or_domain.lower()
+    # NOTE: this used to be `.lstrip("www.")`, which strips any leading
+    # characters found in the set {w, w, w, .} rather than the literal
+    # prefix "www." — it was silently mangling any domain that happened to
+    # start with a "w" (e.g. "weworkremotely.com" -> "eworkremotely.com",
+    # "workday.com" -> "orkday.com", "wise.com" -> "ise.com"), which broke
+    # domain matching AND corrupted the "Website" column for those leads.
+    if domain.startswith("www."):
+        domain = domain[4:]
+    return domain
+
+
+def is_hard_blocked(url_or_domain: str) -> bool:
+    """Never worth visiting at all — social media & pure startup directories."""
+    domain = normalize_domain(url_or_domain)
+    blocked = SOCIAL_DOMAINS | AGGREGATOR_DOMAINS
+    return any(d in domain for d in blocked)
+
+
+def is_link_extraction_source(url_or_domain: str) -> bool:
+    """
+    Job boards & media pages: we don't scrape emails from these directly
+    (that would just be the platform's own support address), but their
+    listing/article pages link OUT to the real company sites — so we fetch
+    them and follow those outbound links instead of skipping them.
+    """
+    domain = normalize_domain(url_or_domain)
+    sources = JOB_BOARD_DOMAINS | MEDIA_DOMAINS
+    return any(d in domain for d in sources)
 
 
 def is_blocked_domain(url_or_domain: str) -> bool:
-    """True if URL belongs to a job board, media site, or startup aggregator."""
-    domain = normalize_domain(url_or_domain)
-    blocked = SKIP_DOMAINS | AGGREGATOR_DOMAINS | MEDIA_DOMAINS
-    return any(d in domain for d in blocked)
+    """True if this URL should never be scraped AS IF it were a company page."""
+    return is_hard_blocked(url_or_domain) or is_link_extraction_source(url_or_domain)
 
 
 def is_bad_company_name(name: str) -> bool:
@@ -301,13 +380,38 @@ def domain_to_company_name(domain: str) -> str:
     return re.sub(r"[-_]", " ", root).title()
 
 
+def _field_variants(field: str) -> List[str]:
+    """Return the field as typed plus any known phrasing alternates
+    (fullstack / full stack / full-stack, etc.), deduplicated, original first."""
+    field = field.strip()
+    variants = [field]
+    key = field.lower()
+    for alt in FIELD_SYNONYMS.get(key, []):
+        if alt.lower() not in (v.lower() for v in variants):
+            variants.append(alt)
+    return variants
+
+
+def _phrase(term: str) -> str:
+    """Quote multi-word terms to keep them adjacent; leave single words
+    unquoted since quoting a lone token gains nothing and can make some
+    engines stricter about capitalization/stemming."""
+    return f'"{term}"' if " " in term.strip() else term.strip()
+
+
 def build_search_queries(
     field: str,
     app_type: str,
     location: str = "",
     remote: bool = False,
 ) -> List[str]:
-    """Build focused search queries from structured user inputs."""
+    """Build a broad set of search queries from structured user inputs.
+
+    Generates queries across three angles:
+      1. Direct company-site queries (field + hiring language)
+      2. site: queries against job boards we now crawl for outbound links
+      3. site: queries against ATS platforms (real company career pages)
+    """
     field = field.strip()
     if not field:
         return []
@@ -315,28 +419,44 @@ def build_search_queries(
     type_terms = APP_TYPE_TERMS.get(app_type, ["careers"])
     primary_term = type_terms[0]
     loc = location.strip()
+    field_variants = _field_variants(field)
 
-    queries = []
+    queries: List[str] = []
 
-    # Core: field + role type + company signal
-    base = f'"{field}" {primary_term} company'
-    if loc:
-        base += f" {loc}"
-    if remote:
-        base += " remote"
-    queries.append(base)
+    # 1. Direct company-site queries — one per field phrasing variant
+    for fv in field_variants:
+        base = f'{_phrase(fv)} {primary_term}'
+        if loc:
+            base += f" {loc}"
+        if remote:
+            base += " remote"
+        queries.append(base)
 
-    # Recruitment-focused variant
-    queries.append(f'"{field}" {primary_term} careers contact email' + (f" {loc}" if loc else ""))
+    # Recruitment-focused variant (main field spelling only, avoid over-multiplying)
+    queries.append(f'{_phrase(field)} {primary_term} contact email' + (f" {loc}" if loc else ""))
+
+    # 2. Job-board-targeted queries — these boards are now crawled for
+    # outbound company links rather than skipped, so hitting them directly
+    # is a reliable way to surface real companies.
+    for board in SITE_SEARCH_BOARDS:
+        q = f'site:{board} {_phrase(field)}'
+        if loc:
+            q += f" {loc}"
+        queries.append(q)
+
+    # 3. ATS-platform queries — a hit is already a real company career page
+    for ats in SITE_SEARCH_ATS:
+        queries.append(f'site:{ats} {_phrase(field)}')
 
     # Startup / SME angle (good for internships)
     if app_type == "Internship":
-        queries.append(f'"{field}" startup {primary_term}' + (f" {loc}" if loc else "") + (" remote" if remote else ""))
+        queries.append(f'{_phrase(field)} startup {primary_term}' + (f" {loc}" if loc else "") + (" remote" if remote else ""))
 
     # French queries when location suggests France
     if loc and any(w in loc.lower() for w in ["france", "paris", "lyon", "français", "fr "]):
         fr_term = "stage" if app_type == "Internship" else "recrutement"
-        queries.append(f'"{field}" {fr_term} entreprise' + (f" {loc}" if loc else ""))
+        queries.append(f'{_phrase(field)} {fr_term} entreprise' + (f" {loc}" if loc else ""))
+        queries.append(f'site:welcometothejungle.com {_phrase(field)} {fr_term}')
 
     # Deduplicate while preserving order
     seen: set = set()
@@ -346,7 +466,7 @@ def build_search_queries(
         if q_norm not in seen:
             seen.add(q_norm)
             unique.append(q_norm)
-    return unique[:3]
+    return unique[:8]
 
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -572,17 +692,28 @@ def scrape_company_url(url: str, debug_fn=None) -> List[dict]:
     if not email_data:
         log(f"  ↳ No emails on main page – checking sub-pages for {company_name}…")
         visited: set = {url}
+        candidate_urls: List[str] = []
+
+        # 1. Nav-link-derived candidates (original approach)
         for a in soup.find_all("a", href=True):
             href_raw = a["href"]
             href_lo  = href_raw.lower()
             text_lo  = a.get_text(" ", strip=True).lower()
             if not any(kw in href_lo or kw in text_lo for kw in CONTACT_PAGE_KEYWORDS):
                 continue
-
             sub_url = urljoin(url, href_raw)
-            # Stay on the same domain
             if urlparse(sub_url).netloc != urlparse(url).netloc:
                 continue
+            candidate_urls.append(sub_url)
+
+        # 2. Guessed common paths — catches sites whose nav is JS-rendered
+        # and therefore invisible to a plain HTML parse (very common on
+        # modern React/Next.js company sites).
+        for path in ["/contact", "/contact-us", "/about", "/about-us",
+                     "/careers", "/jobs", "/team", "/company"]:
+            candidate_urls.append(urljoin(url, path))
+
+        for sub_url in candidate_urls:
             if sub_url in visited:
                 continue
             visited.add(sub_url)
@@ -595,8 +726,8 @@ def scrape_company_url(url: str, debug_fn=None) -> List[dict]:
             if found:
                 email_data.extend(found)
                 log(f"    ✅ {len(found)} email(s) on {sub_url}")
-                if len(visited) >= 5:   # limit sub-page depth
-                    break
+            if len(visited) >= 8:   # limit sub-page depth
+                break
 
     if not email_data:
         log(f"  ⚠️ No useful emails for {company_name} ({url})")
@@ -663,27 +794,38 @@ def search_and_scrape(
     for q in queries:
         for backend in BACKENDS:
             log(f'🔍 [{backend}] Searching: "{q}"')
-            try:
-                results = list(DDGS().text(q, region=region, max_results=max_results, backend=backend))
-                added = 0
-                for r in results:
-                    href = r.get("href", "")
-                    if href and href not in urls_seen and not is_blocked_domain(href):
-                        urls_seen.add(href)
-                        all_urls.append(href)
-                        added += 1
-                log(f"  → {added} new URLs from {backend}")
-            except Exception as exc:
-                log(f"  ⚠️ {backend} error: {exc}")
+            attempt_results = None
+            for attempt in range(2):  # one retry on transient/rate-limit errors
+                try:
+                    attempt_results = list(DDGS().text(q, region=region, max_results=max_results, backend=backend))
+                    break
+                except Exception as exc:
+                    if attempt == 0:
+                        time.sleep(1.5)
+                        continue
+                    log(f"  ⚠️ {backend} error: {exc}")
+            if attempt_results is None:
+                time.sleep(0.4)
+                continue
+            added = 0
+            for r in attempt_results:
+                href = r.get("href", "")
+                # Only hard-block here (social/aggregators) — job boards and
+                # media pages are KEPT so we can crawl them for outbound links.
+                if href and href not in urls_seen and not is_hard_blocked(href):
+                    urls_seen.add(href)
+                    all_urls.append(href)
+                    added += 1
+            log(f"  → {added} new URLs from {backend}")
             time.sleep(0.4)
 
-    log(f"📋 {len(all_urls)} unique company URLs to process")
+    log(f"📋 {len(all_urls)} unique URLs to process")
 
     found_leads: List[dict] = []
     company_domains_seen: set = set()
 
     for url in all_urls:
-        if is_blocked_domain(url):
+        if is_hard_blocked(url):
             log(f"⏭️  Skipping blocked: {url}")
             continue
 
@@ -696,11 +838,12 @@ def search_and_scrape(
             continue
 
         page_title = (soup_main.title.string or "").lower() if soup_main.title else ""
-        is_media = any(d in url_lower for d in MEDIA_DOMAINS)
-        is_listicle = is_media or any(kw in page_title for kw in LISTICLE_KEYWORDS)
+        is_extraction_source = is_link_extraction_source(url)
+        is_listicle = is_extraction_source or any(kw in page_title for kw in LISTICLE_KEYWORDS)
 
         if is_listicle:
-            log(f"📰 Media/listicle — extracting company links from: {url}")
+            kind = "Job board" if is_link_extraction_source(url) and not any(d in url_lower for d in MEDIA_DOMAINS) else "Media/listicle"
+            log(f"📰 {kind} — extracting company links from: {url}")
             ext_links: set = set()
             for a in soup_main.find_all("a", href=True):
                 href = a["href"]
@@ -710,13 +853,16 @@ def search_and_scrape(
                         href.startswith("http")
                         and h_netloc
                         and h_netloc != parsed.netloc
-                        and not is_blocked_domain(href)
+                        and not is_hard_blocked(href)
                         and not any(n in href.lower() for n in NOISE_LINK_DOMAINS)
                     ):
                         ext_links.add(href)
                 except Exception:
                     pass
-            target_urls: List[str] = sorted(ext_links, key=lambda x: len(urlparse(x).path))[:12]
+            # Job board listing pages tend to have many candidate links —
+            # allow a bigger slice than a single blog/media article.
+            slice_size = 20 if is_link_extraction_source(url) else 12
+            target_urls: List[str] = sorted(ext_links, key=lambda x: len(urlparse(x).path))[:slice_size]
             log(f"  ➡️ Found {len(ext_links)} company links, visiting top {len(target_urls)}")
         else:
             target_urls = [url]
@@ -795,8 +941,12 @@ st.caption("Find real company emails, score them, and send personalised applicat
 
 with st.expander("🔍 Auto-Scrape Leads from Web", expanded=True):
     st.info(
-        "Fill in your **field** and **application type** — the bot builds targeted searches for you.  \n"
-        "Scores **≥ 60** = high quality · **≥ 40** = worth reviewing · **< 40** = speculative"
+        "Fill in your **field** and **application type** — the bot builds targeted searches for you, "
+        "including phrasing variants (e.g. *fullstack / full stack / full-stack*) and job-board searches "
+        "(Indeed, Welcome to the Jungle, WeWorkRemotely, Greenhouse, Lever) whose listings it follows back "
+        "to real company sites.  \n"
+        "Scores **≥ 60** = high quality · **≥ 40** = worth reviewing · **< 40** = speculative  \n"
+        "Broader field terms now run more searches, so a scrape can take a few minutes — that's expected."
     )
 
     row1_c1, row1_c2 = st.columns([2, 1])
