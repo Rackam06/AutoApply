@@ -16,14 +16,14 @@ No SaaS. No cloud LLM required. Your `.env`, your CVs, your `leads.db`.
 
 ```
 ┌─────────────────────┐     ┌──────────────────────┐     ┌─────────────────┐
-│  Your Profile       │────▶│  outreach_worker.py  │────▶│  leads.db       │
+│  Your Profile       │────>|  outreach_worker.py  │────>│  leads.db       │
 │  (bio, CV, phone)   │     │  plan → scrape →     │     │  ready_to_send  │
 └─────────────────────┘     │  draft → self-review │     │  / flagged      │
                             └──────────────────────┘     └────────┬────────┘
-                                                                   │
-                            ┌──────────────────────┐               │
-                            │  streamlit run app.py│◀──────────────┘
-                            │  edit · preview · send│
+                                                                  │
+                            ┌──────────────────────┐              │
+                            │  streamlit run app.py│◀────────────┘
+                            │  edit·preview·send   │
                             └──────────────────────┘
 ```
 
@@ -51,7 +51,7 @@ No SaaS. No cloud LLM required. Your `.env`, your CVs, your `leads.db`.
 ## Requirements
 
 - **Python 3.11+**
-- **[Ollama](https://ollama.com)** with a chat model pulled (e.g. `gemma3:4b-it-qat`, `gemma4:e4b`, `ministral-3:3b`)
+- **[Ollama](https://ollama.com)** with a chat model pulled (e.g. `gemma3:4b-it-qat`, `gemma4:e4b`, `qwen3.5:4b`)
 - **Gmail** with an [App Password](https://support.google.com/accounts/answer/185833) (only needed when *sending*)
 - Optional GPU — CPU works; drafts are slower (often 2–5 minutes each on small models)
 
