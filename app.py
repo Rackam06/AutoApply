@@ -40,8 +40,14 @@ from scraper import (
 # ─── CONFIGURATION ────────────────────────────────────────────────────────────
 load_dotenv()
 
-MY_EMAIL = os.getenv("MY_EMAIL")
-MY_APP_PASSWORD = os.getenv("MY_APP_PASSWORD")
+MY_EMAIL = (os.getenv("MY_EMAIL") or "").strip().strip('"').strip("'")
+MY_APP_PASSWORD = (os.getenv("MY_APP_PASSWORD") or "").strip().strip('"').strip("'")
+# Gmail app passwords are often copied with spaces; SMTP accepts either form.
+if MY_APP_PASSWORD:
+    MY_APP_PASSWORD_NORM = MY_APP_PASSWORD.replace(" ", "")
+else:
+    MY_APP_PASSWORD_NORM = ""
+
 APPLICANT_NAME = os.getenv("APPLICANT_NAME", "Jane Doe")
 APPLICANT_PHONE = os.getenv("APPLICANT_PHONE", "+1 234 567 890")
 APPLICANT_WEBSITE = os.getenv("APPLICANT_WEBSITE", "www.janedoe.com")
@@ -93,12 +99,16 @@ def get_selection_state() -> dict:
 
 
 def load_ready_df() -> pd.DataFrame:
-    leads = db.get_leads(draft_status="ready_to_send", status="pending")
+    # Include failed sends so the user can retry after fixing credentials
+    leads = [
+        L for L in db.get_leads(draft_status="ready_to_send")
+        if (L.get("status") or "pending") in ("pending", "failed")
+    ]
     rows = db.leads_to_dataframe_rows(leads)
     selections = get_selection_state()
     for row in rows:
         lid = row["id"]
-        row["Select"] = selections.get(lid, False)
+        row["Select"] = bool(selections.get(lid, False))
     if not rows:
         return pd.DataFrame(columns=READY_COLUMNS)
     df = pd.DataFrame(rows)
@@ -108,26 +118,59 @@ def load_ready_df() -> pd.DataFrame:
     return df[READY_COLUMNS + (["id"] if "id" in df.columns else [])]
 
 
-def sync_ready_edits(edited: pd.DataFrame, original: pd.DataFrame) -> None:
-    """Persist table edits back to SQLite."""
-    if edited.equals(original):
-        return
+def sync_ready_edits(edited: pd.DataFrame, original: pd.DataFrame) -> bool:
+    """
+    Persist table edits back to SQLite / selection state.
+    Returns True if any field other than Select changed (caller may rerun).
+    Select-only changes update session_state without forcing a full rerun —
+    that was racing the Send button and clearing the batch.
+    """
     selections = get_selection_state()
+    content_changed = False
     for i, row in edited.iterrows():
         orig = original.iloc[i]
         lead_id = int(orig.get("id") or row.get("id") or 0)
         if not lead_id:
             continue
-        selections[lead_id] = bool(row.get("Select", False))
-        db.update_lead(
-            lead_id,
-            company=str(row.get("Company", "")),
-            email=str(row.get("Email", "")).lower().strip(),
-            draft_subject=str(row.get("Draft Subject", "")),
-            draft_body=str(row.get("Draft Body", "")),
-        )
-    st.session_state.selections = selections
+        new_select = bool(row.get("Select", False))
+        selections[lead_id] = new_select
 
+        company = str(row.get("Company", ""))
+        email = str(row.get("Email", "")).lower().strip()
+        draft_subject = str(row.get("Draft Subject", ""))
+        draft_body = str(row.get("Draft Body", ""))
+        if (
+            company != str(orig.get("Company", ""))
+            or email != str(orig.get("Email", "")).lower().strip()
+            or draft_subject != str(orig.get("Draft Subject", ""))
+            or draft_body != str(orig.get("Draft Body", ""))
+        ):
+            db.update_lead(
+                lead_id,
+                company=company,
+                email=email,
+                draft_subject=draft_subject,
+                draft_body=draft_body,
+            )
+            content_changed = True
+    st.session_state.selections = selections
+    return content_changed
+
+
+def selected_ready_rows(ready_df: pd.DataFrame, edited: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """Prefer live editor Select checkboxes; fall back to session_state."""
+    if ready_df is None or len(ready_df) == 0:
+        return pd.DataFrame()
+    if edited is not None and len(edited) == len(ready_df):
+        merged = ready_df.copy()
+        merged["Select"] = edited["Select"].astype(bool).values
+        # Keep session_state in sync with what the user currently sees
+        selections = get_selection_state()
+        for i, row in merged.iterrows():
+            selections[int(row["id"])] = bool(row["Select"])
+        st.session_state.selections = selections
+        return merged[merged["Select"] == True]
+    return ready_df[ready_df["Select"] == True]
 
 def get_email_content(company_name: str, country: str) -> Tuple[str, str]:
     """Fallback template when no draft exists (legacy preview)."""
@@ -173,19 +216,27 @@ def send_email(
             return False, f"Attachment error: {e}"
 
     try:
-        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=30)
         server.starttls()
-        server.login(MY_EMAIL, MY_APP_PASSWORD)
+        # Prefer spaced password as stored; fall back to digits-only (16-char app password)
+        try:
+            server.login(MY_EMAIL, MY_APP_PASSWORD)
+        except smtplib.SMTPAuthenticationError:
+            if MY_APP_PASSWORD_NORM and MY_APP_PASSWORD_NORM != MY_APP_PASSWORD:
+                server.login(MY_EMAIL, MY_APP_PASSWORD_NORM)
+            else:
+                raise
         server.sendmail(MY_EMAIL, to_email, msg.as_string())
         server.quit()
         return True, None
+    except smtplib.SMTPAuthenticationError as e:
+        return False, (
+            f"Gmail authentication failed: {e}. "
+            "Use a Google App Password (not your normal password), "
+            "and ensure 2FA is enabled on the account."
+        )
     except Exception as e:
         return False, str(e)
-
-
-def send_delay_with_jitter(base_delay: float) -> None:
-    jitter = random.uniform(0, base_delay * 0.5)
-    time.sleep(base_delay + jitter)
 
 
 # ─── UI ───────────────────────────────────────────────────────────────────────
@@ -429,6 +480,7 @@ st.info(
 )
 
 ready_df = load_ready_df()
+edited_ready: Optional[pd.DataFrame] = None
 if len(ready_df) == 0:
     st.caption("No drafts ready yet. Start the worker or scrape leads manually.")
 else:
@@ -451,11 +503,13 @@ else:
     )
 
     if not edited_ready.equals(display_ready):
-        sync_ready_edits(
+        content_changed = sync_ready_edits(
             pd.concat([edited_ready, ready_df[["id"]]], axis=1),
             ready_df,
         )
-        st.rerun()
+        # Only rerun for text edits — Select-only must not abort the Send click
+        if content_changed:
+            st.rerun()
 
 # ══ 5. FLAGGED ════════════════════════════════════════════════════════════════
 
@@ -507,7 +561,10 @@ if all_leads:
 # Maintenance buttons
 ba1, ba2, ba3 = st.columns(3)
 if ba1.button("✅ Select All Ready"):
-    ready_leads = db.get_leads(draft_status="ready_to_send", status="pending")
+    ready_leads = [
+        L for L in db.get_leads(draft_status="ready_to_send")
+        if (L.get("status") or "pending") in ("pending", "failed")
+    ]
     selections = get_selection_state()
     for lead in ready_leads:
         selections[lead["id"]] = True
@@ -542,28 +599,70 @@ if ba3.button("🧹 Remove Blocked Domains"):
 st.markdown("---")
 st.subheader("📧 Email Operations")
 
-ready_df = load_ready_df()
-selected_rows = ready_df[ready_df["Select"] == True] if len(ready_df) else pd.DataFrame()
+# Use live editor checkboxes when available (avoids lost selection on Send click)
+selected_rows = selected_ready_rows(ready_df, edited_ready)
 selected_count = len(selected_rows)
 
-cfg_col1, cfg_col2, cfg_col3 = st.columns(3)
-delay_sec = cfg_col1.slider("Delay between emails (seconds)", 1, 10, 2)
-dry_run = cfg_col2.checkbox("Dry run (preview only – don't actually send)", value=True)
-st.caption(f"Daily cap: {DAILY_EMAIL_CAP} · Sent today: {_today_sent_count()}")
+delay_sec = st.slider(
+    "Delay between emails (seconds)",
+    min_value=30,
+    max_value=300,
+    value=60,
+    step=10,
+    help="Wait this long between real sends (plus a little random jitter). "
+         "Minimum 30s — safer for Gmail rate limits when sending a batch.",
+)
+st.caption(
+    f"{selected_count} selected · Daily cap: {DAILY_EMAIL_CAP} · Sent today: {_today_sent_count()} · "
+    f"Batch wait ≈ {delay_sec}s between each send"
+)
 
-if MY_EMAIL and MY_APP_PASSWORD:
-    send_btn_label = (
-        f"📤 Send to {selected_count} selected"
-        if not dry_run
-        else f"👁️ Preview {selected_count} selected"
+creds_ok = bool(MY_EMAIL and MY_APP_PASSWORD)
+if not creds_ok:
+    st.warning(
+        "⚠️ Email sending not configured. Add `MY_EMAIL` and `MY_APP_PASSWORD` to your `.env` file "
+        "(Google **App Password**, not your normal Gmail password), then restart Streamlit."
     )
-    if st.button(send_btn_label, type="primary", disabled=selected_count == 0):
+else:
+    st.caption(f"Sending as `{MY_EMAIL}`")
+
+btn_c1, btn_c2, _ = st.columns([1, 1, 2])
+preview_clicked = btn_c1.button(
+    f"👁️ Preview {selected_count} selected",
+    disabled=selected_count == 0,
+    use_container_width=True,
+)
+send_clicked = btn_c2.button(
+    f"📤 Send {selected_count} selected",
+    type="primary",
+    disabled=selected_count == 0 or not creds_ok,
+    use_container_width=True,
+)
+
+if preview_clicked and selected_count > 0:
+    for _, row in selected_rows.iterrows():
+        subj = str(row.get("Draft Subject") or "")
+        body = str(row.get("Draft Body") or "")
+        if not subj or not body:
+            subj, body = get_email_content(str(row["Company"]), str(row["Country"]))
+        with st.expander(f"📬 Preview: {row['Email']}", expanded=True):
+            st.text(f"To: {row['Email']}\nSubject: {subj}\n\n{body}")
+
+if send_clicked and selected_count == 0:
+    st.error("No rows selected — check the Select boxes in Ready to Send, then click Send again.")
+
+if send_clicked and selected_count > 0:
+    if not creds_ok:
+        st.error("Cannot send — email credentials missing in `.env`.")
+    else:
         sent_today = _today_sent_count()
         progress = st.progress(0)
+        status_line = st.empty()
         success_count = 0
+        failures: List[str] = []
 
         for i, (_, row) in enumerate(selected_rows.iterrows()):
-            if not dry_run and sent_today + success_count >= DAILY_EMAIL_CAP:
+            if sent_today + success_count >= DAILY_EMAIL_CAP:
                 st.warning(f"Daily cap of {DAILY_EMAIL_CAP} reached — stopping batch.")
                 break
 
@@ -575,38 +674,46 @@ if MY_EMAIL and MY_APP_PASSWORD:
             attach = cv_for_country(profile, str(row.get("Country", "")))
             lead_id = int(row.get("id") or 0)
 
-            if dry_run:
-                with st.expander(f"📬 Preview: {row['Email']}"):
-                    st.text(f"To: {row['Email']}\nSubject: {subj}\n\n{body}")
+            status_line.info(f"Sending {i + 1}/{selected_count} → {row['Email']} …")
+            ok, err = send_email(str(row["Email"]), subj, body, attachment_path=attach)
+            if ok:
+                now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+                db.update_lead(lead_id, status="sent", sent_at=now, self_review_notes=None)
+                selections = get_selection_state()
+                selections[lead_id] = False
+                st.session_state.selections = selections
+                st.toast(f"✅ Sent to {row['Company']}")
                 success_count += 1
             else:
-                ok, err = send_email(row["Email"], subj, body, attachment_path=attach)
-                if ok:
-                    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-                    db.update_lead(
-                        lead_id,
-                        status="sent",
-                        sent_at=now,
-                    )
-                    selections = get_selection_state()
-                    selections[lead_id] = False
-                    st.session_state.selections = selections
-                    st.toast(f"✅ Sent to {row['Company']}")
-                    success_count += 1
-                else:
-                    db.update_lead(lead_id, status="failed")
-                    st.toast(f"❌ Failed: {row['Company']} — {err}")
-
-                if i < selected_count - 1:
-                    send_delay_with_jitter(delay_sec)
+                db.update_lead(
+                    lead_id,
+                    status="failed",
+                    self_review_notes=f"Send failed: {err}",
+                )
+                failures.append(f"{row['Email']}: {err}")
+                st.error(f"❌ Failed to send to **{row['Company']}** (`{row['Email']}`):\n\n{err}")
 
             progress.progress((i + 1) / selected_count)
 
-        if not dry_run:
+            if i < selected_count - 1 and sent_today + success_count < DAILY_EMAIL_CAP:
+                wait = delay_sec + random.uniform(0, delay_sec * 0.5)
+                status_line.info(
+                    f"Waiting {wait:.0f}s before next email "
+                    f"({i + 2}/{selected_count})…"
+                )
+                time.sleep(wait)
+
+        status_line.empty()
+        if success_count:
             st.success(f"Batch done – {success_count} sent.")
+        if failures:
+            st.warning(
+                f"{len(failures)} failed. They stay in Ready to Send with status **Failed** "
+                "so you can fix credentials and retry."
+            )
+            # Do NOT rerun immediately — keep errors visible
+        elif success_count:
             st.rerun()
-else:
-    st.warning("⚠️ Email sending not configured. Add `MY_EMAIL` and `MY_APP_PASSWORD` to your `.env` file.")
 
 # ══ 7. TEMPLATE PREVIEW (read-only) ═══════════════════════════════════════════
 
