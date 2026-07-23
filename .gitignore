@@ -2,8 +2,11 @@
 .env
 .vscode
 leads.csv
+leads.db
+worker.log
 
 # Folders #
 venv/
 docs/
 tests/
+__pycache__/
