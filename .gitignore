@@ -1,12 +1,35 @@
 # Files #
 .env
 .vscode
+.idea
+*.swp
+.DS_Store
 leads.csv
 leads.db
+leads.db-*
 worker.log
+worker.log.*
+search_plan.json
 
-# Folders #
-venv/
-docs/
-tests/
+# Python #
 __pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual envs #
+venv/
+.venv/
+env/
+
+# Personal CVs (keep docs/README.md tracked) #
+docs/*
+!docs/README.md
+
+# Local test dumps #
+tests/fixtures/private/

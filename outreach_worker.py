@@ -3,17 +3,30 @@
 AutoApply outreach worker — continuously finds leads, drafts emails via local LLM,
 self-reviews drafts, and queues ready ones in leads.db.
 
-Usage:
+Preferred usage (profile-driven):
+    python outreach_worker.py
+
+The worker asks the local LLM to propose diversified search angles from your
+bio/CV, then rotates through them across scrape cycles.
+
+Manual override (skip planning):
     python outreach_worker.py --field "Data Science" --type "Full-time job" --remote
+
+Plan only (print suggestions, don't scrape):
+    python outreach_worker.py --plan-only
 """
 
+from __future__ import annotations
+
 import argparse
+import json
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -25,6 +38,7 @@ from scraper import build_search_queries, normalize_domain, search_and_scrape
 load_dotenv()
 
 LOG_FILE = "worker.log"
+PLAN_FILE = "search_plan.json"
 
 
 def setup_logging() -> logging.Logger:
@@ -38,7 +52,6 @@ def setup_logging() -> logging.Logger:
         sh = logging.StreamHandler(sys.stdout)
         sh.setFormatter(fmt)
         root.addHandler(sh)
-    # Surface llm timing lines in the same log
     logging.getLogger("llm").setLevel(logging.INFO)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     return logging.getLogger("outreach_worker")
@@ -124,7 +137,6 @@ def process_lead_draft(
         issue_text = "; ".join(review.get("issues") or [])
         notes.append(f"self_review attempt {attempt + 1}: {issue_text}")
 
-        # On final attempt, store the model's revised version even if flagged
         if attempt == 1:
             db.update_lead(
                 lead_id,
@@ -176,6 +188,149 @@ def scrape_lead_to_db(
     return db.get_lead(lead_id, conn=conn)
 
 
+def save_search_plan(plan: Dict[str, Any], path: str = PLAN_FILE) -> None:
+    payload = {
+        **plan,
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "model": os.getenv("OLLAMA_MODEL", ""),
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
+def load_search_plan(path: str = PLAN_FILE) -> Optional[Dict[str, Any]]:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and data.get("searches"):
+            return data
+    except (OSError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def format_plan(plan: Dict[str, Any]) -> str:
+    lines = ["Search plan:"]
+    summary = (plan.get("summary") or "").strip()
+    if summary:
+        lines.append(f"  {summary}")
+    for i, s in enumerate(plan.get("searches") or [], 1):
+        remote = "remote" if s.get("remote") else "onsite/hybrid ok"
+        loc = s.get("location") or "anywhere"
+        lines.append(
+            f"  {i}. [{s.get('app_type')}] {s.get('field')} "
+            f"({loc}, {remote})"
+        )
+        if s.get("why"):
+            lines.append(f"      why: {s['why']}")
+    return "\n".join(lines)
+
+
+def build_searches_from_args(args: argparse.Namespace) -> List[Dict[str, Any]]:
+    return [{
+        "field": args.field.strip(),
+        "app_type": args.type,
+        "location": (args.location or "").strip(),
+        "remote": bool(args.remote),
+        "why": "Manual CLI override",
+    }]
+
+
+def resolve_search_plan(
+    args: argparse.Namespace,
+    profile: Dict[str, str],
+    logger: logging.Logger,
+) -> List[Dict[str, Any]]:
+    """
+    Decide which searches to run:
+      1. Explicit --field/--type → single manual search
+      2. --reuse-plan + search_plan.json → reuse last plan
+      3. Else → ask LLM to propose angles from profile
+    """
+    if args.field and args.type:
+        logger.info("Using manual CLI search override")
+        searches = build_searches_from_args(args)
+        plan = {"summary": "Manual override from CLI flags.", "searches": searches}
+        save_search_plan(plan)
+        logger.info("\n%s", format_plan(plan))
+        return searches
+
+    if args.reuse_plan:
+        plan = load_search_plan()
+        if plan:
+            logger.info("Reusing saved plan from %s", PLAN_FILE)
+            logger.info("\n%s", format_plan(plan))
+            return list(plan["searches"])
+        logger.warning("No usable %s — generating a new plan", PLAN_FILE)
+
+    logger.info("Asking local LLM for diversified search angles from your profile…")
+    plan = llm.suggest_search_plan(profile)
+    save_search_plan(plan)
+    logger.info("Saved plan → %s", PLAN_FILE)
+    logger.info("\n%s", format_plan(plan))
+    return list(plan["searches"])
+
+
+def run_one_search(
+    search: Dict[str, Any],
+    *,
+    conn,
+    profile: Dict[str, str],
+    min_score: int,
+    max_results: int,
+    stats: Dict[str, int],
+    logger: logging.Logger,
+) -> None:
+    field = search["field"]
+    app_type = search["app_type"]
+    location = search.get("location") or ""
+    remote = bool(search.get("remote"))
+
+    logger.info(
+        "Searching: field=%r type=%r location=%r remote=%s",
+        field, app_type, location or "(any)", remote,
+    )
+    region = region_for_location(location)
+    queries = build_search_queries(field, app_type, location, remote)
+
+    def log_fn(msg: str) -> None:
+        logger.debug(msg)
+
+    found = search_and_scrape(queries, max_results=max_results, region=region, debug_fn=log_fn)
+    logger.info("Scrape returned %d raw lead(s) for %r", len(found), field)
+
+    for raw in found:
+        lead_row = scrape_lead_to_db(raw, conn, min_score)
+        if lead_row is None:
+            stats["skipped_dup"] += 1
+            continue
+
+        stats["leads_found"] += 1
+        fresh_profile = db.get_profile(conn=conn)
+
+        status = process_lead_draft(fresh_profile, lead_row, field, app_type, logger)
+        if status == "ready_to_send":
+            stats["ready"] += 1
+        elif status == "flagged":
+            stats["flagged"] += 1
+        elif status == "rejected":
+            stats["rejected"] += 1
+
+        updated = db.get_lead(lead_row["id"], conn=conn)
+        quality = (updated or {}).get("contact_quality") or lead_row.get("contact_quality") or "?"
+        logger.info(
+            "%s | %s | via=%r | contact=%s | draft=%s",
+            lead_row.get("company", "?"),
+            lead_row.get("email", "?"),
+            field,
+            quality,
+            status,
+        )
+
+
 def run_worker(args: argparse.Namespace) -> None:
     logger = setup_logging()
     conn = db.get_connection()
@@ -195,6 +350,13 @@ def run_worker(args: argparse.Namespace) -> None:
             cv_file_status(fr_path),
         )
 
+    searches = resolve_search_plan(args, profile, logger)
+
+    if args.plan_only:
+        logger.info("Plan-only mode — exiting without scraping.")
+        conn.close()
+        return
+
     stats = {
         "cycles": 0,
         "leads_found": 0,
@@ -204,10 +366,15 @@ def run_worker(args: argparse.Namespace) -> None:
         "skipped_dup": 0,
     }
     start_time = time.time()
+    search_index = 0
 
     logger.info(
-        "Worker started — field=%r type=%r location=%r remote=%s min_score=%d interval=%ds",
-        args.field, args.type, args.location, args.remote, args.min_score, args.cycle_interval,
+        "Worker started — %d search angle(s), min_score=%d, interval=%ds, "
+        "searches_per_cycle=%d",
+        len(searches),
+        args.min_score,
+        args.cycle_interval,
+        args.searches_per_cycle,
     )
 
     try:
@@ -216,43 +383,22 @@ def run_worker(args: argparse.Namespace) -> None:
             cycle_start = datetime.now(timezone.utc).isoformat()
             logger.info("── Cycle %d started at %s ──", stats["cycles"], cycle_start)
 
-            region = region_for_location(args.location)
-            queries = build_search_queries(args.field, args.type, args.location, args.remote)
+            # Rotate through plan: each cycle runs N angles, then advances
+            n = max(1, min(args.searches_per_cycle, len(searches)))
+            batch = []
+            for _ in range(n):
+                batch.append(searches[search_index % len(searches)])
+                search_index += 1
 
-            def log_fn(msg: str) -> None:
-                logger.debug(msg)
-
-            found = search_and_scrape(queries, max_results=10, region=region, debug_fn=log_fn)
-            logger.info("Scrape returned %d raw lead(s)", len(found))
-
-            for raw in found:
-                lead_row = scrape_lead_to_db(raw, conn, args.min_score)
-                if lead_row is None:
-                    stats["skipped_dup"] += 1
-                    continue
-
-                stats["leads_found"] += 1
-                profile = db.get_profile(conn=conn)
-
-                status = process_lead_draft(
-                    profile, lead_row, args.field, args.type, logger
-                )
-                if status == "ready_to_send":
-                    stats["ready"] += 1
-                elif status == "flagged":
-                    stats["flagged"] += 1
-                elif status == "rejected":
-                    stats["rejected"] += 1
-
-                quality = lead_row.get("contact_quality") or "?"
-                updated = db.get_lead(lead_row["id"], conn=conn)
-                quality = (updated or {}).get("contact_quality") or quality
-                logger.info(
-                    "%s | %s | contact=%s | draft=%s",
-                    lead_row.get("company", "?"),
-                    lead_row.get("email", "?"),
-                    quality,
-                    status,
+            for search in batch:
+                run_one_search(
+                    search,
+                    conn=conn,
+                    profile=profile,
+                    min_score=args.min_score,
+                    max_results=args.max_results,
+                    stats=stats,
+                    logger=logger,
                 )
 
             logger.info(
@@ -291,16 +437,44 @@ def run_worker(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="AutoApply outreach worker")
-    parser.add_argument("--field", required=True, help='Job field, e.g. "Data Science"')
+    parser = argparse.ArgumentParser(
+        description="AutoApply outreach worker (profile-driven search by default)",
+    )
+    parser.add_argument(
+        "--field",
+        default=None,
+        help='Optional override, e.g. "Data Science". If omitted, LLM plans searches from profile.',
+    )
     parser.add_argument(
         "--type",
-        required=True,
+        default=None,
         choices=["Internship", "Full-time job", "Spontaneous application"],
-        help="Application type",
+        help="Optional application-type override (requires --field)",
     )
-    parser.add_argument("--location", default="", help="Optional location filter")
-    parser.add_argument("--remote", action="store_true", help="Include remote companies")
+    parser.add_argument("--location", default="", help="Optional location filter (manual mode)")
+    parser.add_argument("--remote", action="store_true", help="Include remote (manual mode)")
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Generate/print search plan and exit (no scraping)",
+    )
+    parser.add_argument(
+        "--reuse-plan",
+        action="store_true",
+        help=f"Reuse {PLAN_FILE} instead of regenerating with the LLM",
+    )
+    parser.add_argument(
+        "--searches-per-cycle",
+        type=int,
+        default=1,
+        help="How many search angles to run each cycle (default: 1, rotates through the plan)",
+    )
+    parser.add_argument(
+        "--max-results",
+        type=int,
+        default=10,
+        help="Max search results per query backend (default: 10)",
+    )
     parser.add_argument(
         "--cycle-interval",
         type=int,
@@ -314,6 +488,10 @@ def main() -> None:
         help="Minimum email score to process (default: 40)",
     )
     args = parser.parse_args()
+
+    if (args.field and not args.type) or (args.type and not args.field):
+        parser.error("Use both --field and --type together, or neither for auto-planning.")
+
     run_worker(args)
 
 

@@ -31,6 +31,10 @@ PAGE_CHARS = 600
 CLASSIFY_NUM_PREDICT = 96
 DRAFT_NUM_PREDICT = 350
 REVIEW_NUM_PREDICT = 400
+PLAN_NUM_PREDICT = 500
+PLAN_CV_CHARS = 1600
+
+VALID_APP_TYPES = ("Internship", "Full-time job", "Spontaneous application")
 
 
 def _timeout() -> Tuple[float, float]:
@@ -372,4 +376,116 @@ def self_review(
         "issues": [str(i) for i in issues],
         "revised_subject": str(result.get("revised_subject", draft.get("subject", ""))).strip(),
         "revised_body": revised_body,
+    }
+
+
+def suggest_search_plan(profile: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Derive a diversified job-search plan from bio + CV.
+
+    Returns:
+      {
+        "summary": str,
+        "searches": [
+          {"field": str, "app_type": str, "location": str, "remote": bool, "why": str},
+          ...
+        ]
+      }
+    """
+    bio = (profile.get("bio") or "")[:BIO_CHARS]
+    cv = build_cv_text_for_llm(profile)[:PLAN_CV_CHARS]
+    full_name = profile_full_name(profile)
+
+    if not bio.strip() and not cv.strip():
+        raise ValueError(
+            "Profile bio/CV empty — fill Your Profile in the dashboard before auto-planning."
+        )
+
+    system = (
+        "You are a career search strategist. Given an applicant bio and CV highlights, "
+        "propose a diversified set of job SEARCH ANGLES — not just the obvious title. "
+        "People who only search 'Data Science' compete with everyone; niche or adjacent "
+        "titles that match real projects often convert better.\n\n"
+        "Respond with JSON only:\n"
+        "{\n"
+        '  "summary": "1-2 sentence overview of this candidates positioning",\n'
+        '  "searches": [\n'
+        "    {\n"
+        '      "field": "short search phrase used in job boards (2-5 words)",\n'
+        '      "app_type": "Internship" | "Full-time job" | "Spontaneous application",\n'
+        '      "location": "" or city/country if strongly implied,\n'
+        '      "remote": true|false,\n'
+        '      "why": "one sentence tying this angle to their experience"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Rules:\n"
+        "- Return 4 to 6 searches, ranked best-first.\n"
+        "- Diversify: mix core title, adjacent titles, domain angles (e.g. FinTech), "
+        "and skill-based angles (e.g. Python developer, LLM engineer).\n"
+        "- field must be a concrete searchable phrase employers actually post "
+        "(e.g. 'Machine Learning Engineer', not 'someone who likes AI').\n"
+        "- Prefer Full-time job unless bio clearly seeks internship/stage.\n"
+        "- Set remote=true when they want remote or are location-flexible.\n"
+        "- Do not invent employers or degrees not in the profile."
+    )
+    user = (
+        f"Applicant: {full_name or '(name not set)'}\n\n"
+        f"Bio:\n{bio or '(empty)'}\n\n"
+        f"CV highlights:\n{cv or '(empty)'}"
+    )
+    result = _chat_json(
+        system, user, num_predict=PLAN_NUM_PREDICT, temperature=0.4, label="search_plan"
+    )
+
+    raw_searches = result.get("searches") or []
+    if isinstance(raw_searches, dict):
+        raw_searches = list(raw_searches.values())
+
+    searches: list[Dict[str, Any]] = []
+    seen_fields: set[str] = set()
+    for item in raw_searches:
+        if not isinstance(item, dict):
+            continue
+        field = " ".join(str(item.get("field") or "").split()).strip()
+        if not field:
+            continue
+        key = field.lower()
+        if key in seen_fields:
+            continue
+        seen_fields.add(key)
+
+        app_type = str(item.get("app_type") or "Full-time job").strip()
+        if app_type not in VALID_APP_TYPES:
+            # Fuzzy map common variants
+            lo = app_type.lower()
+            if "intern" in lo or "stage" in lo:
+                app_type = "Internship"
+            elif "spontan" in lo:
+                app_type = "Spontaneous application"
+            else:
+                app_type = "Full-time job"
+
+        remote = item.get("remote")
+        if isinstance(remote, str):
+            remote = remote.strip().lower() in ("1", "true", "yes", "y")
+        else:
+            remote = bool(remote) if remote is not None else True
+
+        searches.append({
+            "field": field,
+            "app_type": app_type,
+            "location": str(item.get("location") or "").strip(),
+            "remote": remote,
+            "why": str(item.get("why") or "").strip(),
+        })
+        if len(searches) >= 6:
+            break
+
+    if not searches:
+        raise ValueError("LLM returned no usable search angles — retry or set --field manually.")
+
+    return {
+        "summary": str(result.get("summary") or "").strip(),
+        "searches": searches,
     }
